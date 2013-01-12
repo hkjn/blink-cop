@@ -2,8 +2,13 @@
 
 """Changes blink(1) color depending on build status, as reported by remote host.
 
+In connectino wtih separate command (defaults to ./buildstatus) at the
+remote host that produces the strings "green", "red", "black", etc on
+stdout when called, this will keep your blink(1) in sync with your
+build status.
+
 Requires:
-- ssh
+- ssh with public keys set up
 - blink1-tool
 - connected blink(1) device
 """
@@ -13,11 +18,13 @@ import subprocess
 
 STABLE_PUBLIC_HOST = 'http://www.google.com'
 BLINK_TOOL = './blink1-tool'
+
+# Host and command (run via SSH).
 HOST = 'henrik.mtv'
-GET_BUILD_STATUS_COMMAND = 'bin/blink'  # Command to run on HOST to get build status.
+GET_BUILD_STATUS_COMMAND = './buildstatus'
 # BLINK_DELAY_MS * TIMES_TO_BLINK gives latency between network polls.
 TIMES_TO_BLINK = 5
-BLINK_DELAY_MS = 6000
+BLINK_DELAY_MS = 5000
 COLOR_FADING_DELAY = BLINK_DELAY_MS
 
 
@@ -70,7 +77,7 @@ def RunCmdOnHost(cmd):
     if stderr:
         # Something unexpected (beyond just being offline).
         print 'Remote command failed: %s' % stderr
-        raise ServerError(err)
+        raise ServerError(stderr)
     if not output:
         raise ServerError('Empty output from remote comamnd')
     return output
@@ -217,7 +224,7 @@ def Run():
         # Check status.
         try:
             status.Update()
-        except Exception as e:
+        except Error as e:
             RunBlinkCmd(GetDiscoCmd())  # If nothing caught this, exit with a show.
             raise
         # Show status on blink(1). This blocks for some time.
