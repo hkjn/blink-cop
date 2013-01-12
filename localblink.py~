@@ -218,7 +218,7 @@ def Run():
         try:
             status.Update()
         except Exception as e:
-            RunBlinkCmd(GetDiscoCmd())  # If nothing caught this, exit with a show.
+            RunDiscoCmd()  # If nothing caught this, exit with a show.
             raise
         # Show status on blink(1). This blocks for some time.
         RunBlinkCmd(status.GetBlinkCmd())
