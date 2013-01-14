@@ -20,12 +20,13 @@ STABLE_PUBLIC_HOST = 'http://www.google.com'
 BLINK_TOOL = './blink1-tool'
 
 # Host and command (run via SSH).
-HOST = 'henrik.mtv'
+#HOST = 'henrik.mtv'
+HOST = 'bork.i'
 GET_BUILD_STATUS_COMMAND = './buildstatus'
-# BLINK_DELAY_MS * TIMES_TO_BLINK gives latency between network polls.
-TIMES_TO_BLINK = 5
-BLINK_DELAY_MS = 5000
-COLOR_FADING_DELAY = BLINK_DELAY_MS
+POLLING_LATENCY_MS = 5000
+# Tweak blinking frequency to approximate the polling latency we want.
+TIMES_TO_BLINK = 10
+BLINK_DELAY_MS = int(float(POLLING_LATENCY_MS) / TIMES_TO_BLINK)
 
 
 class Error(BaseException):
@@ -39,6 +40,9 @@ class ServerError(Error):
 
 class BlinkError(Error):
     """Something went wrong with blink(1)."""
+
+class InvalidStatusError(Error):
+    """Invalid status."""
 
 
 class Colors(object):
@@ -55,8 +59,9 @@ def GetBlinkCmd(color, blink_delay_ms=BLINK_DELAY_MS):
     """Get blink1-tool command line as a list."""
 
     r, g, b = color
+    color_fading_delay = blink_delay_ms  # Anything else looks jagged.
     flags = ('--rgb %s,%s,%s --blink %s --delay %s -m %s' %
-             (r, g, b, TIMES_TO_BLINK, blink_delay_ms, COLOR_FADING_DELAY))
+             (r, g, b, TIMES_TO_BLINK, blink_delay_ms, color_fading_delay))
     return [BLINK_TOOL] + flags.split(' ')
 
 
@@ -68,19 +73,28 @@ def GetDiscoCmd():
 def RunCmdOnHost(cmd):
     """Run command remotely, via ssh."""
 
-    commands = ['ssh', HOST, cmd]
+    commands = ['ssh', '-qo', 'PasswordAuthentication=no', HOST, cmd]
     child = subprocess.Popen(commands, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, close_fds=True)
-    output, stderr = child.communicate()
-    if 'Could not resolve hostname' in stderr:
+    output = child.communicate()
+    stdout = output[0].lower()
+    stderr = output[1].lower()
+    print '[ssh out] %s' % stdout
+    print '[ssh err] %s' % stderr
+    if 'could not resolve hostname' in stderr:
+        # Failed to connect to remote host.
         raise CannotGetBuildStatusError(stderr)
+    if 'not authenticated' in stdout:
+        # Remote command failed for auth reasons.
+        raise CannotGetBuildStatusError(stderr)
+
     if stderr:
         # Something unexpected (beyond just being offline).
         print 'Remote command failed: %s' % stderr
         raise ServerError(stderr)
-    if not output:
+    if not stdout:
         raise ServerError('Empty output from remote comamnd')
-    return output
+    return stdout
 
 
 def GetBuildStatus():
@@ -107,6 +121,14 @@ def GetBuildStatus():
     return result
 
 
+def Draw(r, g, b):
+    color_fading_delay = BLINK_DELAY_MS
+    flags = ('--rgb %s,%s,%s --blink %s --delay %s -m %s' %
+             (r, g, b, TIMES_TO_BLINK, BLINK_DELAY_MS, color_fading_delay))
+    RunBlinkCmd([BLINK_TOOL] + flags.split(' '))
+
+
+
 def RunBlinkCmd(commands):
     """Send command (as list) to blink1-tool."""
 
@@ -123,26 +145,28 @@ def RunBlinkCmd(commands):
 
 def StatusEnumToString(status):
     if status == Status.UNKNOWN:
-        return "unknown"
+        return 'unknown'
     elif status == Status.OFFLINE:
-        return "offline"
+        return 'offline'
     elif status == Status.ONLINE:
-        return "online"
+        return 'online'
     elif status == Status.BUILD_GREY:
-        return "unknown build status"
+        return 'unknown'
+    elif status == Status.BUILD_BLACK:
+        return 'black build'
     elif status == Status.BUILD_RED:
-        return "red build"
+        return 'red build'
     elif status == Status.BUILD_GREEN:
-        return "green build"
-    raise InvalidStatusException('Unknown status: %s' % status)
+        return 'green build'
+    raise InvalidStatusException(status)
 
 
 class Status(object):
     UNKNOWN = 0
     OFFLINE = 1
     ONLINE = 2
-    # Everything past this implies being both online and able to talk
-    # to remote server to get build status..
+    # All the BUILD statuses imply being online and able to talk to
+    # remote server to get build status.
     BUILD_GREY = 3
     BUILD_BLACK = 4
     BUILD_RED = 5
@@ -153,6 +177,7 @@ class Status(object):
 
     def GetBlinkCmd(self):
         """Get the blink(1) command for the current status."""
+
         if self.status in (self.UNKNOWN, self.OFFLINE):
             return GetBlinkCmd(Colors.ORANGE)
         elif self.status == self.ONLINE:
@@ -160,11 +185,14 @@ class Status(object):
         elif self.status == self.BUILD_GREY:
             return GetBlinkCmd(Colors.GREY)
         elif self.status == self.BUILD_RED:
-            # TODO: Lowering the blink delay in effect speeds up the
-            # network polling. This is not great.
+            return GetBlinkCmd(Colors.RED, blink_delay_ms=500)
+        elif self.status == self.BUILD_BLACK:
+            # Aggressive red blinking.
             return GetBlinkCmd(Colors.RED, blink_delay_ms=50)
         elif self.status == self.BUILD_GREEN:
             return GetBlinkCmd(Colors.GREEN)
+        raise InvalidStatusException(self.status)
+
 
     def __str__(self):
         return StatusEnumToString(self.status)
