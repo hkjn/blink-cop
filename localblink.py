@@ -2,7 +2,7 @@
 
 """Changes blink(1) color depending on build status, as reported by remote host.
 
-In connectino wtih separate command (defaults to ./buildstatus) at the
+Combined with a separate command (defaults to ./buildstatus) on the
 remote host that produces the strings "green", "red", "black", etc on
 stdout when called, this will keep your blink(1) in sync with your
 build status.
