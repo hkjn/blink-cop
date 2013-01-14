@@ -33,7 +33,10 @@ class Error(BaseException):
     """A base exception."""
 
 class CannotGetBuildStatusError(Error):
-    """Not able to get build status, it seems."""
+    """Not able to get build status on the remote host."""
+
+class NotAuthedRemotelyError(Error):
+    """Not authenticated on the remote host."""
 
 class ServerError(Error):
     """Something broke in a remote call."""
@@ -86,7 +89,7 @@ def RunCmdOnHost(cmd):
         raise CannotGetBuildStatusError(stderr)
     if 'not authenticated' in stdout:
         # Remote command failed for auth reasons.
-        raise CannotGetBuildStatusError(stderr)
+        raise NotAuthedRemotelyError(stderr)
 
     if stderr:
         # Something unexpected (beyond just being offline).
@@ -150,6 +153,8 @@ def StatusEnumToString(status):
         return 'offline'
     elif status == Status.ONLINE:
         return 'online'
+    elif status == Status.NOT_AUTHED_REMOTELY:
+        return 'not authenticated remotely'
     elif status == Status.BUILD_GREY:
         return 'unknown'
     elif status == Status.BUILD_BLACK:
@@ -165,12 +170,11 @@ class Status(object):
     UNKNOWN = 0
     OFFLINE = 1
     ONLINE = 2
-    # All the BUILD statuses imply being online and able to talk to
-    # remote server to get build status.
-    BUILD_GREY = 3
-    BUILD_BLACK = 4
-    BUILD_RED = 5
-    BUILD_GREEN = 6
+    NOT_AUTHED_REMOTELY = 3
+    BUILD_GREY = 4
+    BUILD_BLACK = 5
+    BUILD_RED = 6
+    BUILD_GREEN = 7
 
     def __init__(self):
         self.status = self.UNKNOWN
@@ -182,6 +186,8 @@ class Status(object):
             return GetBlinkCmd(Colors.ORANGE)
         elif self.status == self.ONLINE:
             return GetBlinkCmd(Colors.YELLOW)
+        elif self.status == self.NOT_AUTHED_REMOTELY:
+            return GetBlinkCmd(Colors.BLUE)
         elif self.status == self.BUILD_GREY:
             return GetBlinkCmd(Colors.GREY)
         elif self.status == self.BUILD_RED:
@@ -206,14 +212,21 @@ class Status(object):
             if HttpGet(STABLE_PUBLIC_HOST):
                 self.status = self.ONLINE
         elif self.status >= self.ONLINE:
-            # We're online, try to get build status.
+            # We're online, so try to connect to the remote host to
+            # get build status.
             try:
                 self.status = GetBuildStatus()
             except CannotGetBuildStatusError as e:
-                # Go back to assuming we're ONLINE (which will drop us
-                # OFFLINE eventually, if the stable public host can't
-                # be reached).
+                # We were able to connect to the remote host but
+                # couldn't get status, so go back to assuming we're
+                # ONLINE (which will drop us OFFLINE eventually, if
+                # the stable public host can't be reached).
                 self.status = self.ONLINE
+            except NotAuthedRemotelyError as e:
+                # We were able to connect to the remote host but are
+                # not authed there.
+                self.status = self.NOT_AUTHED_REMOTELY
+
         if self.status != old_status:
             print('Status changed from %s to %s' %
                   (StatusEnumToString(old_status),
