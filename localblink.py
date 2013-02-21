@@ -11,6 +11,9 @@ Requires:
 - ssh with public keys set up
 - blink1-tool
 - connected blink(1) device
+
+TODO: Detect if ssh won't work without password (kinit was not run).
+TODO: Turn off when sleeping.
 """
 
 import httplib
@@ -20,14 +23,15 @@ STABLE_PUBLIC_HOST = 'http://www.google.com'
 BLINK_TOOL = './blink1-tool'
 
 # Host and command (run via SSH).
-#HOST = 'henrik.mtv'
-HOST = 'bork.i'
+HOST = 'henrik.mtv'
+#HOST = 'bork.i'
 GET_BUILD_STATUS_COMMAND = './buildstatus'
 POLLING_LATENCY_MS = 5000
 # Tweak blinking frequency to approximate the polling latency we want.
 TIMES_TO_BLINK = 10
 BLINK_DELAY_MS = int(float(POLLING_LATENCY_MS) / TIMES_TO_BLINK)
-
+# Horrible hack: The cover of my blink(1) fell off, so let's scale down the intensity by 80%.
+SCALING_FACTOR = 0.8
 
 class Error(BaseException):
     """A base exception."""
@@ -62,9 +66,10 @@ def GetBlinkCmd(color, blink_delay_ms=BLINK_DELAY_MS):
     """Get blink1-tool command line as a list."""
 
     r, g, b = color
+    scaling = SCALING_FACTOR
     color_fading_delay = blink_delay_ms  # Anything else looks jagged.
     flags = ('--rgb %s,%s,%s --blink %s --delay %s -m %s' %
-             (r, g, b, TIMES_TO_BLINK, blink_delay_ms, color_fading_delay))
+             (r * scaling, g * scaling, b * scaling, TIMES_TO_BLINK, blink_delay_ms, color_fading_delay))
     return [BLINK_TOOL] + flags.split(' ')
 
 
@@ -96,7 +101,8 @@ def RunCmdOnHost(cmd):
         print 'Remote command failed: %s' % stderr
         raise ServerError(stderr)
     if not stdout:
-        raise ServerError('Empty output from remote comamnd')
+        print 'Empty output from remote comamnd'
+        raise CannotGetBuildStatusError('Empty output from remote command')
     return stdout
 
 
@@ -268,7 +274,8 @@ def Run():
         except Error as e:
             RunBlinkCmd(GetDiscoCmd())  # If nothing caught this, exit with a show.
             raise
-        # Show status on blink(1). This blocks for some time.
+        # Show status on blink(1). This blocks for some time (possible
+        # network call + sending command to blink(1).
         RunBlinkCmd(status.GetBlinkCmd())
 
 
