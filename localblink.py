@@ -1,11 +1,11 @@
 #!/usr/bin/python
 
-"""Changes blink(1) color depending on build status, as reported by remote host.
+"""Changes blink(1) color depending on "status", as reported by remote host.
 
-Combined with a separate command (defaults to ./buildstatus) on the
-remote host that produces the strings "green", "red", "black", etc on
-stdout when called, this will keep your blink(1) in sync with your
-build status.
+Combined with a separate command (defaults to ./status) on the remote
+host that produces JSON strings on the format [[r, g, b], delay] on
+stdout when called, this will keep your blink(1) in sync with whatever
+status you want to track (e.g. builds, monitoring).
 
 Requires:
 - ssh with public keys set up
@@ -16,6 +16,7 @@ TODO: Detect if ssh won't work without password (kinit was not run).
 TODO: Turn off when sleeping.
 """
 
+import json
 import httplib
 import subprocess
 
@@ -25,19 +26,21 @@ BLINK_TOOL = './blink1-tool'
 # Host and command (run via SSH).
 HOST = 'henrik.mtv'
 #HOST = 'bork.i'
-GET_BUILD_STATUS_COMMAND = './buildstatus'
+GET_STATUS_COMMAND = './status'
 POLLING_LATENCY_MS = 5000
 # Tweak blinking frequency to approximate the polling latency we want.
 TIMES_TO_BLINK = 10
 BLINK_DELAY_MS = int(float(POLLING_LATENCY_MS) / TIMES_TO_BLINK)
-# Horrible hack: The cover of my blink(1) fell off, so let's scale down the intensity by 80%.
-SCALING_FACTOR = 0.8
+# Horrible hack: The cover of my blink(1) fell off, so I'll scale
+# down the intensity by some factor to not blind myself.
+SCALING_FACTOR = 0.4
+
 
 class Error(BaseException):
     """A base exception."""
 
-class CannotGetBuildStatusError(Error):
-    """Not able to get build status on the remote host."""
+class CannotGetStatusError(Error):
+    """Not able to get status on the remote host."""
 
 class NotAuthedRemotelyError(Error):
     """Not authenticated on the remote host."""
@@ -52,20 +55,9 @@ class InvalidStatusError(Error):
     """Invalid status."""
 
 
-class Colors(object):
-    RED = (255, 0, 0)
-    BLUE = (0, 0, 255)
-    ORANGE = (255, 190, 0)
-    GREY = (127, 127, 127)
-    GREEN = (0, 255, 0)
-    TEAL = (0, 255, 255)
-    YELLOW = (255, 200, 0)
-
-
-def GetBlinkCmd(color, blink_delay_ms=BLINK_DELAY_MS):
+def GetBlinkCmd(r, g, b, blink_delay_ms=BLINK_DELAY_MS):
     """Get blink1-tool command line as a list."""
 
-    r, g, b = color
     scaling = SCALING_FACTOR
     color_fading_delay = blink_delay_ms  # Anything else looks jagged.
     flags = ('--rgb %s,%s,%s --blink %s --delay %s -m %s' %
@@ -91,7 +83,7 @@ def RunCmdOnHost(cmd):
     print '[ssh err] %s' % stderr
     if 'could not resolve hostname' in stderr:
         # Failed to connect to remote host.
-        raise CannotGetBuildStatusError(stderr)
+        raise CannotGetStatusError(stderr)
     if 'not authenticated' in stdout:
         # Remote command failed for auth reasons.
         raise NotAuthedRemotelyError(stderr)
@@ -102,31 +94,25 @@ def RunCmdOnHost(cmd):
         raise ServerError(stderr)
     if not stdout:
         print 'Empty output from remote comamnd'
-        raise CannotGetBuildStatusError('Empty output from remote command')
+        raise CannotGetStatusError('Empty output from remote command')
     return stdout
 
 
-def GetBuildStatus():
-    """Get the status of the continous build from a remote host.
+def GetStatus():
+    """Get the status of something we're interested in from the remote host.
 
-    Assumes that the strings 'green', 'red', 'black', 'grey' are in
-    the response as appropriate (and not otherwise).
+    Assumes that the remote command puts output like (255 0 0 x 25),
+    for blinking pure red every 25 ms.
     """
-
-    result = RunCmdOnHost(GET_BUILD_STATUS_COMMAND)
-    if 'green' in result:
-        result = Status.BUILD_GREEN
-    elif 'red' in result:
-        result = Status.BUILD_RED
-    elif 'black' in result:
-        result = Status.BUILD_BLACK
-    elif 'grey' in result:
-        result = Status.BUILD_GREY
-    else:
-        # Catch-all for "managed to talk to server, but can't
-        # understand what it's saying".
-        raise ServerError('Unexpected response: %s' % result)
-    print 'Build status: %s.' % StatusEnumToString(result)
+    
+    result = RunCmdOnHost(GET_STATUS_COMMAND)
+    rgb, delay = json.loads(result)
+    r, g, b = rgb
+    result = ServerStatus(r, g, b, delay=delay)
+    # TODO: Error checking.
+    # Catch-all for "managed to talk to server, but can't
+    # understand what it's saying".
+#    raise ServerError('Unexpected response: %s' % result)
     return result
 
 
@@ -152,91 +138,81 @@ def RunBlinkCmd(commands):
         raise BlinkError('Blink command failed: %s' % err)
 
 
-def StatusEnumToString(status):
-    if status == Status.UNKNOWN:
-        return 'unknown'
-    elif status == Status.OFFLINE:
-        return 'offline'
-    elif status == Status.ONLINE:
-        return 'online'
-    elif status == Status.NOT_AUTHED_REMOTELY:
-        return 'not authenticated remotely'
-    elif status == Status.BUILD_GREY:
-        return 'unknown'
-    elif status == Status.BUILD_BLACK:
-        return 'black build'
-    elif status == Status.BUILD_RED:
-        return 'red build'
-    elif status == Status.BUILD_GREEN:
-        return 'green build'
-    raise InvalidStatusException(status)
-
-
 class Status(object):
-    UNKNOWN = 0
-    OFFLINE = 1
-    ONLINE = 2
-    NOT_AUTHED_REMOTELY = 3
-    BUILD_GREY = 4
-    BUILD_BLACK = 5
-    BUILD_RED = 6
-    BUILD_GREEN = 7
-
-    def __init__(self):
-        self.status = self.UNKNOWN
-
-    def GetBlinkCmd(self):
-        """Get the blink(1) command for the current status."""
-
-        if self.status in (self.UNKNOWN, self.OFFLINE):
-            return GetBlinkCmd(Colors.ORANGE)
-        elif self.status == self.ONLINE:
-            return GetBlinkCmd(Colors.YELLOW)
-        elif self.status == self.NOT_AUTHED_REMOTELY:
-            return GetBlinkCmd(Colors.BLUE)
-        elif self.status == self.BUILD_GREY:
-            return GetBlinkCmd(Colors.GREY)
-        elif self.status == self.BUILD_RED:
-            return GetBlinkCmd(Colors.RED, blink_delay_ms=500)
-        elif self.status == self.BUILD_BLACK:
-            # Aggressive red blinking.
-            return GetBlinkCmd(Colors.RED, blink_delay_ms=50)
-        elif self.status == self.BUILD_GREEN:
-            return GetBlinkCmd(Colors.GREEN)
-        raise InvalidStatusException(self.status)
-
+    def __init__(self, r, g, b, delay=500):
+        self.r = r
+        self.g = g
+        self.b = b
+        self.delay = delay if delay is not None else 500
 
     def __str__(self):
-        return StatusEnumToString(self.status)
+        raise NotImplementedError()
 
     def Update(self):
         """Update status."""
 
-        old_status = self.status
-        if self.status in (self.UNKNOWN, self.OFFLINE):
-            # Let's see if we're online now.
-            if HttpGet(STABLE_PUBLIC_HOST):
-                self.status = self.ONLINE
-        elif self.status >= self.ONLINE:
-            # We're online, so try to connect to the remote host to
-            # get build status.
-            try:
-                self.status = GetBuildStatus()
-            except CannotGetBuildStatusError as e:
-                # We were able to connect to the remote host but
-                # couldn't get status, so go back to assuming we're
-                # ONLINE (which will drop us OFFLINE eventually, if
-                # the stable public host can't be reached).
-                self.status = self.ONLINE
-            except NotAuthedRemotelyError as e:
-                # We were able to connect to the remote host but are
-                # not authed there.
-                self.status = self.NOT_AUTHED_REMOTELY
+        raise NotImplementedError()
 
-        if self.status != old_status:
-            print('Status changed from %s to %s' %
-                  (StatusEnumToString(old_status),
-                   StatusEnumToString(self.status)))
+    def Blink(self):
+        """Get the blink(1) command for the current status."""
+        # TODO: Rename.
+        return RunBlinkCmd(GetBlinkCmd(self.r, self.g, self.b, blink_delay_ms=self.delay))
+        
+
+class UnknownStatus(Status):
+    def __init__(self):
+        # TODO: Abstract the numbers away.
+        super(UnknownStatus, self).__init__(127, 127, 127)
+    def Update(self):
+        # Let's see if we're online now.
+        if HttpGet(STABLE_PUBLIC_HOST):
+            return OnlineStatus()
+        return self
+
+    def __str__(self):
+        return 'unknown'
+
+class OfflineStatus(UnknownStatus):
+    def __init__(self):
+        # TODO: Abstract the numbers away.
+        super(OfflineStatus, self).__init__(255, 190, 0)
+
+    def __str__(self):
+        return 'offline'
+
+class OnlineStatus(Status):
+    def __init__(self, r=255, g=200, b=0, delay=None):
+        # TODO: Abstract the numbers away.
+        super(OnlineStatus, self).__init__(r, g, b, delay=delay)
+
+    def Update(self):
+        # Try to connect to the remote host to get status.
+        try:
+            return GetStatus()
+        except CannotGetStatusError as e:
+            # We were able to connect to the remote host but couldn't
+            # get status, so go back to assuming we're online (which
+            # will drop us offline eventually, if the stable public
+            # host can't be reached).
+            return self
+        except NotAuthedRemotelyError as e:
+            # We were able to connect to the remote host but are
+            # not authed there.
+            return NotAuthedRemotelyStatus()
+    def __str__(self):
+        return 'online'
+
+class NotAuthedRemotelyStatus(OnlineStatus):
+    def __init__(self):
+        # TODO: Abstract the numbers away.
+        super(NotAuthedRemotelyStatus, self).__init__(0, 0, 255)
+
+    def __str__(self):
+        return 'not authed remotely'
+
+class ServerStatus(OnlineStatus):
+    def __str__(self):
+        return 'server-specified status'
 
 
 def HttpGet(host):
@@ -266,17 +242,18 @@ def HttpGet(host):
 def Run():
     """Infinite loop showing status."""
 
-    status = Status()
+    status = UnknownStatus()
     while True:
         # Check status.
         try:
-            status.Update()
+            status = status.Update()
+            print 'Status: %s' % status
         except Error as e:
             RunBlinkCmd(GetDiscoCmd())  # If nothing caught this, exit with a show.
             raise
         # Show status on blink(1). This blocks for some time (possible
         # network call + sending command to blink(1).
-        RunBlinkCmd(status.GetBlinkCmd())
+        status.Blink()
 
 
 if __name__ == '__main__':
