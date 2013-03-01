@@ -42,9 +42,6 @@ class Error(BaseException):
 class CannotGetStatusError(Error):
     """Not able to get status on the remote host."""
 
-class NotAuthedRemotelyError(Error):
-    """Not authenticated on the remote host."""
-
 class ServerError(Error):
     """Something broke in a remote call."""
 
@@ -84,9 +81,6 @@ def RunCmdOnHost(cmd):
     if 'could not resolve hostname' in stderr:
         # Failed to connect to remote host.
         raise CannotGetStatusError(stderr)
-    if 'not authenticated' in stdout:
-        # Remote command failed for auth reasons.
-        raise NotAuthedRemotelyError(stderr)
 
     if stderr:
         # Something unexpected (beyond just being offline).
@@ -106,13 +100,14 @@ def GetStatus():
     """
     
     result = RunCmdOnHost(GET_STATUS_COMMAND)
-    rgb, delay = json.loads(result)
-    r, g, b = rgb
+    try:
+        rgb, delay = json.loads(result)
+        r, g, b = rgb
+    except ValueError as ve:
+        # Catch-all for "managed to talk to server, but can't
+        # understand what it's saying".
+        raise ServerError('Unexpected response: %s' % result)
     result = ServerStatus(r, g, b, delay=delay)
-    # TODO: Error checking.
-    # Catch-all for "managed to talk to server, but can't
-    # understand what it's saying".
-#    raise ServerError('Unexpected response: %s' % result)
     return result
 
 
@@ -195,20 +190,8 @@ class OnlineStatus(Status):
             # will drop us offline eventually, if the stable public
             # host can't be reached).
             return self
-        except NotAuthedRemotelyError as e:
-            # We were able to connect to the remote host but are
-            # not authed there.
-            return NotAuthedRemotelyStatus()
     def __str__(self):
         return 'online'
-
-class NotAuthedRemotelyStatus(OnlineStatus):
-    def __init__(self):
-        # TODO: Abstract the numbers away.
-        super(NotAuthedRemotelyStatus, self).__init__(0, 0, 255)
-
-    def __str__(self):
-        return 'not authed remotely'
 
 class ServerStatus(OnlineStatus):
     def __str__(self):
